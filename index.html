@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X投稿 オーガニック/プロモ判定チェッカー</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+    background: #f5f7fa;
+    color: #1a2433;
+    min-height: 100vh;
+    padding: 40px 16px;
+  }
+  .container { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 6px; }
+  .subtitle { font-size: 13px; color: #5b6b7f; margin-bottom: 24px; line-height: 1.6; }
+  .input-row { display: flex; gap: 8px; margin-bottom: 20px; }
+  input[type="text"] {
+    flex: 1;
+    padding: 12px 14px;
+    font-size: 14px;
+    border: 1px solid #c9d4e0;
+    border-radius: 8px;
+    background: #fff;
+  }
+  button {
+    padding: 12px 22px;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: #1d6ee8;
+    color: #fff;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { background: #1558c4; }
+  button:disabled { background: #9db4d4; cursor: default; }
+  .card {
+    background: #fff;
+    border: 1px solid #dde5ee;
+    border-radius: 12px;
+    padding: 22px;
+    display: none;
+  }
+  .verdict {
+    display: inline-block;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 8px 16px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+  }
+  .verdict.ad { background: #fdeaea; color: #c0392b; }
+  .verdict.organic { background: #e6f6ec; color: #1e8449; }
+  .verdict.error { background: #fdf3e0; color: #b9770e; }
+  .verdict-note { font-size: 12.5px; color: #5b6b7f; line-height: 1.7; margin-bottom: 16px; }
+  .source-raw { font-size: 13px; color: #33475f; margin-bottom: 16px; }
+  .source-raw code {
+    background: #eef2f7;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12.5px;
+  }
+  .metrics { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .metric {
+    flex: 1 1 100px;
+    background: #f7f9fc;
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-align: center;
+  }
+  .metric .label { font-size: 11px; color: #6a7a8e; margin-bottom: 3px; }
+  .metric .value { font-size: 17px; font-weight: 700; }
+  .post-info { font-size: 13px; color: #33475f; line-height: 1.8; border-top: 1px solid #edf1f6; padding-top: 14px; }
+  .post-text {
+    background: #f7f9fc;
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 8px;
+    font-size: 12.5px;
+    color: #445468;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 130px;
+    overflow-y: auto;
+  }
+  .footer {
+    margin-top: 22px;
+    font-size: 11.5px;
+    color: #8494a6;
+    line-height: 1.8;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>X投稿 オーガニック / プロモ判定チェッカー</h1>
+  <p class="subtitle">
+    X の投稿 URL を貼ると、その投稿が「通常投稿」か「広告マネージャーで作成された投稿(広告配信前提)」かを判定します。<br>
+    あわせてインプレッション(再生数)・リポスト・いいねも表示します。
+  </p>
+
+  <div class="input-row">
+    <input type="text" id="url" placeholder="https://x.com/ユーザー名/status/0000000000 を貼り付け" autofocus>
+    <button id="check">チェック</button>
+  </div>
+
+  <div class="card" id="result"></div>
+
+  <p class="footer">
+    ・データ取得には外部サービス(FxEmbed / api.fxtwitter.com)を利用しています。X 公式ではないため、まれに応答しないことがあります。取得できるのは X 上で誰でも見られる公開情報のみです。<br>
+    ・「広告マネージャー作成」は投稿の<b>作成経路</b>の判定です。いま実際に広告が配信中かどうかは、投稿主の X Ads Manager でしか確認できません。
+  </p>
+</div>
+
+<script>
+const input = document.getElementById('url');
+const btn = document.getElementById('check');
+const card = document.getElementById('result');
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+const HOSTS = new Set(['x.com', 'twitter.com', 'fxtwitter.com', 'fixupx.com', 'vxtwitter.com']);
+
+function parseUrl(raw) {
+  const s = raw.trim();
+  if (/^\d{10,25}$/.test(s)) return { user: null, id: s };
+  let u;
+  try {
+    u = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s);
+  } catch (e) {
+    return null;
+  }
+  const host = u.hostname.toLowerCase().replace(/^(www\.|mobile\.|m\.)/, '');
+  if (!HOSTS.has(host)) return null;
+  let m = u.pathname.match(/^\/i\/web\/status(?:es)?\/(\d+)/);
+  if (m) return { user: null, id: m[1] };
+  m = u.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/status(?:es)?\/(\d+)/);
+  if (m) return { user: m[1], id: m[2] };
+  return null;
+}
+
+function showError(title, detail) {
+  card.style.display = 'block';
+  card.innerHTML =
+    '<span class="verdict error">' + esc(title) + '</span>' +
+    '<p class="verdict-note">' + esc(detail) + '</p>';
+}
+
+function fmtNum(n) {
+  if (n === null || n === undefined || n === '') return '—';
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toLocaleString('ja-JP') : '—';
+}
+
+function fmtJst(ts) {
+  if (!ts) return '—';
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', weekday: 'short'
+  }).format(new Date(ts * 1000)) + ' JST';
+}
+
+async function check() {
+  const parsed = parseUrl(input.value);
+  if (!parsed) {
+    showError('URL を確認してください', 'https://x.com/ユーザー名/status/数字 の形式の URL(または投稿 ID の数字だけ)を貼り付けてください。');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '取得中…';
+  card.style.display = 'block';
+  card.innerHTML = '<p class="verdict-note">データを取得しています…</p>';
+
+  const path = parsed.user ? parsed.user + '/status/' + parsed.id : 'status/' + parsed.id;
+  try {
+    const res = await fetch('https://api.fxtwitter.com/' + path);
+    if (res.status === 429) {
+      showError('アクセスが集中しています',
+        'データ取得サービス側の利用制限(レート制限)にかかりました。1〜2 分待ってから再度お試しください。');
+      return;
+    }
+    if (!res.ok && res.status !== 404) {
+      showError('取得エラー (HTTP ' + res.status + ')',
+        'データ取得サービス側で問題が起きている可能性があります。時間を置いて再度お試しください。');
+      return;
+    }
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      showError('取得エラー',
+        'データ取得サービスから想定外の形式の応答が返りました。時間を置いて再度お試しください。');
+      return;
+    }
+
+    const code = Number(data.code);
+    if (code === 404 || !data.tweet) {
+      showError('投稿が見つかりません',
+        '削除済み・非公開アカウント・URL の誤りのいずれかの可能性があります。ブラウザで元の URL を開いて、投稿がまだ存在するか確認してください。');
+      return;
+    }
+    if (code !== 200) {
+      showError('取得エラー (code ' + data.code + ')',
+        (data.message || '') + ' — 時間を置いて再度お試しください。');
+      return;
+    }
+
+    const t = data.tweet;
+    const rawSrc = t.source;
+    const src = rawSrc || '(取得できず)';
+    const isAd = rawSrc ? /ads\s*manager|advertiser|twitter\s*ads|\bx\s*ads\b/i.test(rawSrc) : false;
+
+    let verdict;
+    if (!rawSrc) {
+      verdict =
+        '<span class="verdict error">判定不能</span>' +
+        '<p class="verdict-note">投稿元(source)の情報が取得できませんでした。この結果だけでは、オーガニック投稿か広告マネージャー作成かは判断できません。時間を置いて再度お試しください。</p>';
+    } else if (isAd) {
+      verdict =
+        '<span class="verdict ad">広告マネージャー作成の投稿</span>' +
+        '<p class="verdict-note">X の広告管理画面(Ads Manager)から作成された、広告配信前提の投稿です。この形式の投稿はフォロワーのタイムラインにはほぼ流れず、露出は「広告配信 + リポスト経由 + プロフィール直接訪問」が主導線になります。インプレッションが伸びない場合は、広告キャンペーンが配信中か(審査・開始日時・予算)を投稿主の Ads Manager で確認してください。</p>';
+    } else {
+      verdict =
+        '<span class="verdict organic">通常投稿(オーガニック)</span>' +
+        '<p class="verdict-note">投稿元に広告管理画面での作成を示す表記はなく、通常のアプリ / Web / 配信ツールから投稿されたオーガニック投稿とみられます。</p>';
+    }
+
+    card.innerHTML =
+      verdict +
+      '<p class="source-raw">投稿元(source): <code>' + esc(src) + '</code></p>' +
+      '<div class="metrics">' +
+        '<div class="metric"><div class="label">インプレッション</div><div class="value">' + fmtNum(t.views) + '</div></div>' +
+        '<div class="metric"><div class="label">リポスト</div><div class="value">' + fmtNum(t.retweets) + '</div></div>' +
+        '<div class="metric"><div class="label">いいね</div><div class="value">' + fmtNum(t.likes) + '</div></div>' +
+        '<div class="metric"><div class="label">返信</div><div class="value">' + fmtNum(t.replies) + '</div></div>' +
+      '</div>' +
+      '<div class="post-info">' +
+        '投稿者: ' + esc(t.author ? t.author.name + ' (@' + t.author.screen_name + ')' : '—') + '<br>' +
+        '投稿日時: ' + fmtJst(t.created_timestamp) +
+        '<div class="post-text">' + esc(t.text || '(本文なし)') + '</div>' +
+      '</div>';
+  } catch (e) {
+    showError('通信エラー',
+      'データ取得サービス(api.fxtwitter.com)に接続できませんでした。ネットワークを確認するか、時間を置いて再度お試しください。続く場合はサービス側が停止している可能性があります。');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'チェック';
+  }
+}
+
+btn.addEventListener('click', check);
+input.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
+</script>
+</body>
+</html>
