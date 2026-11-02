@@ -100,7 +100,7 @@
 <div class="container">
   <h1>X投稿 オーガニック / プロモ判定チェッカー</h1>
   <p class="subtitle">
-    X の投稿 URL を貼ると、その投稿が「通常投稿」か「広告マネージャーで作成された投稿(広告配信前提)」かを判定します。<br>
+    X の投稿 URL を貼ると、その投稿に「広告マネージャーで作るカード(ウェブサイトカード等)」が付いているかを判定します。<br>
     あわせてインプレッション(再生数)・リポスト・いいねも表示します。
   </p>
 
@@ -113,7 +113,8 @@
 
   <p class="footer">
     ・データ取得には外部サービス(FxEmbed / api.fxtwitter.com)を利用しています。X 公式ではないため、まれに応答しないことがあります。取得できるのは X 上で誰でも見られる公開情報のみです。<br>
-    ・「広告マネージャー作成」は投稿の<b>作成経路</b>の判定です。いま実際に広告が配信中かどうかは、投稿主の X Ads Manager でしか確認できません。
+    ・「広告マネージャー作成」は投稿の<b>作成経路</b>の判定です。いま実際に広告が配信中かどうかは、投稿主の X Ads Manager でしか確認できません。<br>
+    ・判定方法: 画像・動画があるのに本文に画像リンク(pic.x.com)が付いていない投稿を、カード付きと判定します。2026-11-02 に 68 件で X のカード情報と突き合わせ、全件一致を確認しています。
   </p>
 </div>
 
@@ -214,28 +215,42 @@ async function check() {
     }
 
     const t = data.tweet;
+    // 2026-11 時点で fxtwitter は source を返さなくなったため、返ってきた時だけ使う
     const rawSrc = t.source;
-    const src = rawSrc || '(取得できず)';
-    const isAd = rawSrc ? /ads\s*manager|advertiser|twitter\s*ads|\bx\s*ads\b/i.test(rawSrc) : false;
+    const isAdSource = rawSrc ? /ads\s*manager|advertiser|twitter\s*ads|\bx\s*ads\b/i.test(rawSrc) : false;
+    // カードの画像・動画は media に入るが、本文の画像リンク(media facet)は付かない
+    const facets = t.raw_text && Array.isArray(t.raw_text.facets) ? t.raw_text.facets : null;
+    const hasMedia = !!(t.media && Array.isArray(t.media.all) && t.media.all.length);
+    const hasMediaLink = facets ? facets.some(f => f.type === 'media') : false;
+    const isCard = hasMedia && !hasMediaLink;
 
     let verdict;
-    if (!rawSrc) {
-      verdict =
-        '<span class="verdict error">判定不能</span>' +
-        '<p class="verdict-note">投稿元(source)の情報が取得できませんでした。この結果だけでは、オーガニック投稿か広告マネージャー作成かは判断できません。時間を置いて再度お試しください。</p>';
-    } else if (isAd) {
+    let basis;
+    if (isAdSource) {
       verdict =
         '<span class="verdict ad">広告マネージャー作成の投稿</span>' +
-        '<p class="verdict-note">X の広告管理画面(Ads Manager)から作成された、広告配信前提の投稿です。この形式の投稿はフォロワーのタイムラインにはほぼ流れず、露出は「広告配信 + リポスト経由 + プロフィール直接訪問」が主導線になります。インプレッションが伸びない場合は、広告キャンペーンが配信中か(審査・開始日時・予算)を投稿主の Ads Manager で確認してください。</p>';
+        '<p class="verdict-note">投稿元の表記から、X の広告管理画面(Ads Manager)で作成された投稿です。インプレッションが伸びない場合は、広告キャンペーンが配信中か(審査・開始日時・予算)を投稿主の Ads Manager で確認してください。</p>';
+      basis = '投稿元(source) = ' + rawSrc;
+    } else if (!facets) {
+      verdict =
+        '<span class="verdict error">判定不能</span>' +
+        '<p class="verdict-note">本文の情報が取得できませんでした。この結果だけでは、カード付きかどうかは判断できません。時間を置いて再度お試しください。</p>';
+      basis = '本文のリンク情報が取得できず';
+    } else if (isCard) {
+      verdict =
+        '<span class="verdict ad">広告マネージャー作成(カード付き)</span>' +
+        '<p class="verdict-note">画像・動画がカード(ウェブサイトカード等)として付いています。カードは X の広告管理画面(Ads Manager)で作る形式です。タイムラインにも出す設定か、広告だけで配信する設定かは、この結果からは分かりません。インプレッションが伸びない場合は、広告キャンペーンが配信中か(審査・開始日時・予算)を投稿主の Ads Manager で確認してください。</p>';
+      basis = '画像・動画あり / 本文に画像リンクなし → カード';
     } else {
       verdict =
-        '<span class="verdict organic">通常投稿(オーガニック)</span>' +
-        '<p class="verdict-note">投稿元に広告管理画面での作成を示す表記はなく、通常のアプリ / Web / 配信ツールから投稿されたオーガニック投稿とみられます。</p>';
+        '<span class="verdict organic">通常投稿(カードなし)</span>' +
+        '<p class="verdict-note">広告管理画面で作るカードは付いていません。ただし、広告管理画面で作った画像・動画だけの投稿(カードなし)は、ここでは通常投稿と見分けられないことがあります。</p>';
+      basis = hasMedia ? '画像・動画あり / 本文に画像リンクあり → 通常の添付' : '画像・動画なし';
     }
 
     card.innerHTML =
       verdict +
-      '<p class="source-raw">投稿元(source): <code>' + esc(src) + '</code></p>' +
+      '<p class="source-raw">判定の根拠: <code>' + esc(basis) + '</code></p>' +
       '<div class="metrics">' +
         '<div class="metric"><div class="label">インプレッション</div><div class="value">' + fmtNum(t.views) + '</div></div>' +
         '<div class="metric"><div class="label">リポスト</div><div class="value">' + fmtNum(t.retweets) + '</div></div>' +
